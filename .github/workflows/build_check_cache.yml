@@ -38,7 +38,7 @@ jobs:
           echo cache-path=${{ github.workspace }}/deps/build${{ env.dep-folder-name }} >> ${{ env.output-cmd }}
       - name: load cache
         id: cache_deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ steps.set_outputs.outputs.cache-path }}
           key: ${{ steps.set_outputs.outputs.cache-key }}
