@@ -29,7 +29,7 @@ jobs:
 
       - name: Restore deps tarball
         id: cache_deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Cache a SINGLE zstd tarball instead of the multi-million-file
           # destdir tree. Archiving the raw tree (OCCT/OpenCV/boost headers)
