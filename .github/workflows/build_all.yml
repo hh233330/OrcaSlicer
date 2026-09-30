@@ -1,9 +1,6 @@
 name: Build all
 
 on:
-  push:
-    branches:
-      - gpt
   schedule:
     - cron: '0 18 * * *' # everyday 2:00(beijing time UTC+8)
 

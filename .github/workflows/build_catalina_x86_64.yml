@@ -1,6 +1,9 @@
 name: Build Snapmaker Orca 2.4.0 - Catalina Intel x86_64
 
 'on':
+  push:
+    branches:
+      - gpt
   workflow_dispatch:
 
 permissions:
