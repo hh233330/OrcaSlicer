@@ -1,0 +1,244 @@
+name: Build Snapmaker Orca 2.4.0 - Catalina Intel x86_64
+
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-catalina-x86_64:
+    name: macOS Intel x86_64 / Catalina 10.15 target
+    runs-on: macos-15-intel
+    timeout-minutes: 300
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      MACOSX_DEPLOYMENT_TARGET: '10.15'
+      CMAKE_OSX_DEPLOYMENT_TARGET: '10.15'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Show build host and toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          uname -m
+          sw_vers
+          xcodebuild -version
+          clang --version
+
+      - name: Install build tools except CMake
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install ninja zstd gettext libtool automake autoconf texinfo pkg-config wabt
+          echo "$(brew --prefix gettext)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix libtool)/bin" >> "$GITHUB_PATH"
+          ninja --version
+          msgfmt --version | head -1
+          echo "zstd: $(brew --prefix zstd)"
+
+      - name: Install pinned CMake 3.31.12
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CMAKE_VERSION="3.31.12"
+          CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-macos10.10-universal.tar.gz"
+          CMAKE_ROOT="$RUNNER_TEMP/cmake-${CMAKE_VERSION}"
+          curl -L --fail --retry 3 --retry-all-errors \
+            -o "$RUNNER_TEMP/cmake.tar.gz" \
+            "$CMAKE_URL"
+          rm -rf "$CMAKE_ROOT"
+          mkdir -p "$CMAKE_ROOT"
+          tar -xzf "$RUNNER_TEMP/cmake.tar.gz" \
+            -C "$CMAKE_ROOT" \
+            --strip-components=1
+          echo "$CMAKE_ROOT/CMake.app/Contents/bin" >> "$GITHUB_PATH"
+          "$CMAKE_ROOT/CMake.app/Contents/bin/cmake" --version
+
+      - name: Verify Catalina source patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(uname -m)" = "x86_64"
+          grep -q '10.15' CMakeLists.txt
+          grep -q '<string>10.15</string>' src/dev-utils/platform/osx/Info.plist.in
+          grep -q 'OSX_DEPLOYMENT_TARGET="10.15"' build_release_macos.sh
+          grep -q 'SLIC3R_SENTRY_DEFAULT OFF' CMakeLists.txt
+          grep -q 'bundle_macos_runtime_deps.sh' build_release_macos.sh
+          test -f scripts/bundle_macos_runtime_deps.sh
+          test -f scripts/build_catalina_canvaskit.sh
+          test -f resources/web/flutter_web/flutter_bootstrap.03d77004336933df.js
+          test -f resources/web/flutter_web/flutter_overlay.682ee8650714d1a8.js
+          test -f resources/web/flutter_web/main.8c1e336f107a452a.js
+          test "$(shasum -a 256 resources/web/flutter_web/flutter_bootstrap.03d77004336933df.js | cut -c1-16)" = "03d77004336933df"
+          test "$(shasum -a 256 resources/web/flutter_web/flutter_overlay.682ee8650714d1a8.js | cut -c1-16)" = "682ee8650714d1a8"
+          test "$(shasum -a 256 resources/web/flutter_web/main.8c1e336f107a452a.js | cut -c1-16)" = "8c1e336f107a452a"
+          test ! -e resources/web/flutter_web/flutter_bootstrap.8411d9d1e47b24e7.js
+          test ! -e resources/web/flutter_web/flutter_overlay.e82843210477bf96.js
+          grep -Fq 'flutter_overlay.682ee8650714d1a8.js' resources/web/flutter_web/index.html
+          grep -Fq 'flutter_bootstrap.03d77004336933df.js' resources/web/flutter_web/index.html
+          grep -Fq 'main.8c1e336f107a452a.js' resources/web/flutter_web/index.html
+          node --check resources/web/flutter_web/flutter.js
+          node --check resources/web/flutter_web/flutter_bootstrap.03d77004336933df.js
+          node --check resources/web/flutter_web/flutter_overlay.682ee8650714d1a8.js
+          if grep -R -nF '??=' resources/web/flutter_web/flutter_bootstrap*.js 2>/dev/null; then
+            echo 'ERROR: Catalina-incompatible ??= remains in Flutter bootstrap.'
+            exit 1
+          fi
+
+      - name: Build Catalina scalar CanvasKit from exact Flutter engine
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # GitHub's web uploader may store repository shell scripts as 0644.
+          # Invoke the script through bash as well as restoring its executable bit.
+          chmod +x scripts/build_catalina_canvaskit.sh
+          ls -l scripts/build_catalina_canvaskit.sh
+          bash scripts/build_catalina_canvaskit.sh
+
+      - name: Verify Catalina CanvasKit is scalar WASM
+        shell: bash
+        run: |
+          set -euxo pipefail
+          WASM="resources/web/flutter_web/canvaskit-catalina/canvaskit.wasm"
+          JS="resources/web/flutter_web/canvaskit-catalina/canvaskit.js"
+          test -s "$WASM"
+          test -s "$JS"
+          echo "CanvasKit WASM:"
+          ls -lh "$WASM"
+          echo "Checking for WebAssembly SIMD instructions..."
+          if command -v wasm2wat >/dev/null 2>&1; then
+            if wasm2wat "$WASM" -o "$RUNNER_TEMP/canvaskit.wat"; then
+              if grep -Eq '\bv128\.|\bi(8x16|16x8|32x4|64x2)\.|\bf(32x4|64x2)\.' "$RUNNER_TEMP/canvaskit.wat"; then
+                echo "ERROR: Catalina CanvasKit still contains WebAssembly SIMD instructions."
+                exit 1
+              fi
+            else
+              echo "ERROR: wasm2wat could not parse the generated CanvasKit."
+              exit 1
+            fi
+          else
+            echo "ERROR: wasm2wat is required for the Catalina scalar-WASM validation."
+            exit 1
+          fi
+          echo "Catalina CanvasKit validation: scalar/no-SIMD"
+
+      - name: Build dependencies and application
+        shell: bash
+        run: |
+          set -euxo pipefail
+          chmod +x build_release_macos.sh
+          chmod +x scripts/run_gettext.sh
+          chmod +x scripts/bundle_macos_runtime_deps.sh
+          ls -l build_release_macos.sh
+          ls -l scripts/run_gettext.sh
+          ls -l scripts/bundle_macos_runtime_deps.sh
+          ./build_release_macos.sh -a x86_64 -t 10.15 -x
+
+      - name: Verify final app bundle and runtime dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP="build/x86_64/Snapmaker_Orca/Snapmaker Orca.app"
+          BIN="$APP/Contents/MacOS/Snapmaker_Orca"
+          INFO="$APP/Contents/Info.plist"
+          FW="$APP/Contents/Frameworks/libzstd.1.dylib"
+          test -d "$APP"
+          test -f "$BIN"
+          test -f "$INFO"
+          test -f "$FW"
+          file "$BIN"
+          lipo -info "$BIN" | grep -q 'x86_64'
+          MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO")"
+          echo "LSMinimumSystemVersion=$MIN_OS"
+          test "$MIN_OS" = "10.15"
+          echo "Checking zstd dependency..."
+          otool -L "$BIN" | grep -Fq '@rpath/libzstd.1.dylib'
+          echo "Checking for forbidden external Homebrew paths..."
+          if otool -L "$BIN" | grep -Eq '/usr/local/(opt|Cellar)/|/opt/homebrew/(opt|Cellar)/'; then
+            echo 'ERROR: external Homebrew path remains in executable dependencies.'
+            otool -L "$BIN"
+            exit 1
+          fi
+          if test -e "$APP/Contents/MacOS/crashpad_handler" || test -e "$APP/Contents/Frameworks/libsentry.dylib"; then
+            echo 'ERROR: Sentry/Crashpad artifacts were built into Catalina build.'
+            exit 1
+          fi
+          echo 'Final app dependency check:'
+          otool -L "$BIN"
+          echo 'Final RPATH check:'
+          otool -l "$BIN" | awk '/cmd LC_RPATH/{getline; if ($1=="path") print $2}'
+
+      - name: Prepare ZIP archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP="build/x86_64/Snapmaker_Orca/Snapmaker Orca.app"
+          OUT="dist"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" \
+            "$OUT/Snapmaker_Orca_2.4.0_Catalina_x86_64.zip"
+          test -s "$OUT/Snapmaker_Orca_2.4.0_Catalina_x86_64.zip"
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snapmaker_Orca_2.4.0_Catalina_x86_64_zip
+          path: dist/Snapmaker_Orca_2.4.0_Catalina_x86_64.zip
+          if-no-files-found: error
+
+      - name: Create DMG archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP="build/x86_64/Snapmaker_Orca/Snapmaker Orca.app"
+          OUT="dist"
+          DMG_ROOT="$RUNNER_TEMP/snapmaker-orca-dmgroot"
+          DMG_TMP="$RUNNER_TEMP/Snapmaker_Orca_2.4.0_Catalina_x86_64.dmg"
+          DMG_FINAL="$OUT/Snapmaker_Orca_2.4.0_Catalina_x86_64.dmg"
+          rm -rf "$DMG_ROOT"
+          rm -f "$DMG_TMP" "$DMG_FINAL"
+          mkdir -p "$DMG_ROOT"
+          ditto "$APP" "$DMG_ROOT/Snapmaker Orca.app"
+          ln -s /Applications "$DMG_ROOT/Applications"
+          hdiutil create \
+            -volname "Snapmaker Orca 2.4.0 Catalina" \
+            -srcfolder "$DMG_ROOT" \
+            -ov \
+            -format UDZO \
+            -fs HFS+ \
+            "$DMG_TMP"
+          test -s "$DMG_TMP"
+          mv -f "$DMG_TMP" "$DMG_FINAL"
+          rm -rf "$DMG_ROOT"
+          test -s "$DMG_FINAL"
+          ls -lh "$DMG_FINAL"
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          shasum -a 256 \
+            "dist/Snapmaker_Orca_2.4.0_Catalina_x86_64.zip" \
+            "dist/Snapmaker_Orca_2.4.0_Catalina_x86_64.dmg" \
+            > "dist/SHA256SUMS.txt"
+          cat "dist/SHA256SUMS.txt"
+
+      - name: Upload DMG and checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snapmaker_Orca_2.4.0_Catalina_x86_64
+          path: |
+            dist/Snapmaker_Orca_2.4.0_Catalina_x86_64.dmg
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

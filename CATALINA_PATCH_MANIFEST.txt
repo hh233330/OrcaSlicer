@@ -1,0 +1,25 @@
+Catalina 10.15.7 / WKWebView final compatibility patch
+
+Bootstrap:
+- resources/web/flutter_web/flutter.js
+- resources/web/flutter_web/flutter_bootstrap.03d77004336933df.js
+- resources/web/flutter_web/index.html
+- resources/web/flutter_web/version.json
+
+CanvasKit JS compatibility:
+- resources/web/flutter_web/canvaskit/canvaskit.js
+- resources/web/flutter_web/canvaskit/chromium/canvaskit.js
+- resources/web/flutter_web/canvaskit/skwasm.js
+- resources/web/flutter_web/canvaskit/skwasm_heavy.js
+- resources/web/flutter_web/canvaskit/wimp.js
+
+Build helper:
+- scripts/build_catalina_canvaskit.sh
+
+Required generated Catalina renderer:
+- resources/web/flutter_web/canvaskit-catalina/canvaskit.js
+- resources/web/flutter_web/canvaskit-catalina/canvaskit.wasm
+
+GitHub Actions build fix:
+- .github/workflows/build_catalina_x86_64.yml invokes build_catalina_canvaskit.sh via bash after chmod, so GitHub web uploads that store scripts as 0644 do not fail with Permission denied.
+- GitHub workflow installs wabt and verifies the generated CanvasKit WASM contains no SIMD instructions.
